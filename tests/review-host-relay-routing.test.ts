@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { createProfile, emptyProfilesFile, profilesFilePath, writeProfilesFileSync } from "../lib/agent-profiles.ts";
@@ -231,6 +232,69 @@ async function runCapture(cwd: string, harness: RoutingHarness, lineageId: strin
 		harness.native,
 		undefined, undefined, undefined, false, modelRegistry,
 	) as Record<string, unknown>;
+}
+
+// Registered-tool execution is the settings boundary, not extension registration.
+for (const grouped of [false, true]) {
+	for (const setting of ["sse", "websocket", "websocket-cached", "auto", "absent", "undefined", "older-api"] as const) {
+		test(`transport: registered ${grouped ? "group" : "single"} capture reads ${setting} at execution`, async (t) => {
+			t.after(() => {
+				__testing.setReviewHostRelayRunnerForTesting();
+				__testing.setReviewHostRelayGroupRunnersForTesting();
+			});
+			const cwd = repository(t), lineageId = `transport-${grouped}-${setting}`;
+			const inputs = grouped ? groupInputs(lineageId) : [relayCollectInput(lineageId, "review-risk", 0)];
+			const current = finalizeStatus(lineageId, inputs);
+			const harness = nativeHarness([
+				current, current,
+				...(grouped ? [...inputs.map((_input, index) => finalizeStatus(lineageId, inputs.slice(index))), finalizeStatus(lineageId)] : []),
+			]);
+			const relayed: ReviewHostRelayRequest[] = [];
+			__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+				relayed.push(request);
+				return { promptByteLength: 64, resultByteLength: 32, submission: "{}" };
+			});
+			__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => {
+				relayed.push(...requests);
+				return requests.map(prepared);
+			}, async () => ({ promptByteLength: 64, resultByteLength: 32, submission: "{}" }));
+			const tools = new Map<string, any>();
+			let settings: { transport?: string } = { transport: "auto" };
+			const receivers: unknown[] = [];
+			const pi = {
+				on() {},
+				registerCommand() {},
+				registerTool(tool: { name: string }) { tools.set(tool.name, tool); },
+				...(setting === "older-api" ? {} : {
+					getSettings(this: unknown) { receivers.push(this); return settings; },
+				}),
+			} as unknown as ExtensionAPI;
+			createGentleAiExtension({ nativeReviewCli: harness.native })(pi);
+			assert.equal(receivers.length, 0, "settings are not cached at registration");
+			const tool = tools.get(grouped ? "gentle_review_capture_group" : "gentle_review_capture");
+			const parameters = grouped
+				? { lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)) }
+				: { lineageId, collectBinding: JSON.stringify(inputs[0]) };
+			const ctx = { cwd, sessionManager: { getSessionId: () => lineageId } } as unknown as ExtensionContext;
+			const forecast = await tool.execute("forecast", parameters, undefined, undefined, ctx);
+			assert.equal(forecast.details.outcome, "reviewer-model-run-forecast");
+			assert.equal(relayed.length, 0);
+			settings = setting === "absent" ? {} : { transport: setting === "undefined" || setting === "older-api" ? undefined : setting };
+			const expected = settings.transport;
+			const readsBeforeExecution = receivers.length;
+			const result = await tool.execute("capture", { ...parameters, reviewerRunAcknowledged: true }, undefined, undefined, ctx);
+			assert.equal(grouped ? result.details.outcome : result.details.status, grouped ? "native-reviewer-group-status-reconciled" : "captured");
+			assert.equal(relayed.length, inputs.length);
+			for (const request of relayed) {
+				assert.equal((request as ReviewHostRelayRequest & { transport?: string }).transport, expected, "capture relay receives execution-time transport unchanged");
+				assert.equal(Object.hasOwn(request, "transport"), expected !== undefined, "capture omits absent transport rather than forcing a default");
+			}
+			if (setting !== "older-api") {
+				assert.ok(receivers.length > readsBeforeExecution, "capture reads effective settings freshly at execution");
+				assert.ok(receivers.every((receiver) => receiver === pi), "optional getSettings retains its Pi receiver");
+			}
+		});
+	}
 }
 
 // Fake STATUS/relay evidence exercises facade admission, not native-provider E2E.

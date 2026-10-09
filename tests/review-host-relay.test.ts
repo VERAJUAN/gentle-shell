@@ -250,6 +250,18 @@ async function rejectsWithRelayError(promise: Promise<unknown>, kind: string, st
 	return caught!;
 }
 
+for (const transport of ["sse", "websocket", "websocket-cached", "auto", undefined] as const) {
+	test(`transport: injected relay forwards ${transport ?? "absent"} to the reviewer`, async (t) => {
+		const fixture = harness(t);
+		const reviewer = textReviewer(REVIEWER_TEXT);
+		await prepareReviewHostRelaySlot(relayRequest(fixture, { transport }), reviewer.runReviewer);
+		assert.equal(reviewer.calls.length, 1);
+		const request = reviewer.calls[0]! as InProcessReviewerRequest & { transport?: string };
+		assert.equal(request.transport, transport, "relay forwards explicit transport unchanged");
+		assert.equal(Object.hasOwn(request, "transport"), transport !== undefined, "relay omits undefined transport");
+	});
+}
+
 // ---------------------------------------------------------------------------
 // Handshake — every gentle-ai CLI spawn carries the compiled declaration.
 // ---------------------------------------------------------------------------

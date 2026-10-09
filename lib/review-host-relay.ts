@@ -33,6 +33,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import type { SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import {
@@ -386,6 +387,8 @@ export interface ReviewHostRelayRequest {
 	readonly selection?: string;
 	/** The routing entry's thinking label, forwarded verbatim to the completion. */
 	readonly thinking?: string;
+	/** Effective Pi transport snapshot, independent of reviewer model routing. */
+	readonly transport?: SimpleStreamOptions["transport"];
 	/**
 	 * The caller's live pi session id, forwarded into the in-process completion
 	 * request so an OpenCode-routed reviewer model carries its
@@ -736,6 +739,7 @@ export async function prepareReviewHostRelaySlot(
 		outcome = await runReviewer(
 			{
 				selection: preparedRequest.selection!,
+				...(preparedRequest.transport === undefined ? {} : { transport: preparedRequest.transport }),
 				...(preparedRequest.thinking === undefined ? {} : { thinking: preparedRequest.thinking }),
 				...(preparedRequest.reviewerSessionId === undefined ? {} : { sessionId: preparedRequest.reviewerSessionId }),
 				prompt: promptBytes,

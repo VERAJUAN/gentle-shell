@@ -163,6 +163,33 @@ function expectText(outcome: InProcessReviewerOutcome): Extract<InProcessReviewe
 	return outcome as Extract<InProcessReviewerOutcome, { kind: "text" }>;
 }
 
+// Transport inheritance uses the same options on compat and composed dispatch.
+for (const dispatch of ["compat", "composed"] as const) {
+	for (const transport of ["sse", "websocket", "websocket-cached", "auto", undefined] as const) {
+		test(`transport: ${dispatch} completion preserves ${transport ?? "absent"}`, async () => {
+			const compat = capturingComplete(assistantText("ok"));
+			const composed = capturingProvider(assistantText("ok"));
+			const request = { ...baseRequest(), ...(transport === undefined ? {} : { transport }) };
+			const outcome = await runInProcessReviewer(request, {
+				registry: { ...fakeRegistry([fakeModel()]), ...(dispatch === "composed" ? { getProvider: composed.getProvider } : {}) },
+				complete: dispatch === "composed" ? unreachableComplete : compat.complete,
+			});
+			expectText(outcome);
+			const calls = dispatch === "composed" ? composed.calls : compat.calls;
+			assert.equal(calls.length, 1);
+			assert.equal(calls[0]!.options?.transport, transport, "completion options forward explicit transport unchanged");
+			assert.equal(Object.hasOwn(calls[0]!.options!, "transport"), transport !== undefined, "absent transport is omitted, not defaulted");
+		});
+	}
+}
+
+test("transport: explicit undefined is omitted from completion options", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const request = { ...baseRequest(), transport: undefined };
+	await runInProcessReviewer(request, { registry: fakeRegistry([fakeModel()]), complete });
+	assert.equal(Object.hasOwn(calls[0]!.options!, "transport"), false);
+});
+
 // ---------------------------------------------------------------------------
 // Every refusal code
 // ---------------------------------------------------------------------------

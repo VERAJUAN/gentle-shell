@@ -31,6 +31,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -6566,6 +6567,13 @@ function reviewConsentDigest(consent: ReviewConsentEnvelope): string {
 	return createHash("sha256").update(JSON.stringify(consent)).digest("hex");
 }
 
+// Older supported Pi peers may not expose getSettings. Keep the seam optional
+// and invoke it as a method so its receiver remains the live Pi API.
+function reviewCompletionTransport(pi: ExtensionAPI): SimpleStreamOptions["transport"] {
+	const settingsApi = pi as unknown as { getSettings?(): { transport?: SimpleStreamOptions["transport"] } };
+	return settingsApi.getSettings?.()?.transport;
+}
+
 function reviewSessionManagerAndId(context: ExtensionContext): { manager: object; sessionId: string } | undefined {
 	try {
 		const manager = context.sessionManager as unknown as { getSessionId?: () => unknown };
@@ -7344,6 +7352,7 @@ async function executeReviewHostRelayCapture(
 	// keeps compiling unchanged.
 	reviewerSessionId?: string,
 	implicitWorkspaceRoot?: string,
+	transport?: SimpleStreamOptions["transport"],
 ): Promise<Record<string, unknown>> {
 	try {
 		if (slot.submission === undefined) {
@@ -7371,6 +7380,7 @@ async function executeReviewHostRelayCapture(
 				targetCwd: cwd,
 				submission: slot.submission,
 				...launch,
+				...(transport === undefined ? {} : { transport }),
 				...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
 				...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
 				...(signal === undefined ? {} : { signal }),
@@ -7982,6 +7992,7 @@ async function executeReviewCaptureOperation(
 	// x-opencode-session attribution header. Appended last for the same
 	// positional-call-site reason as modelRegistry above.
 	reviewerSessionId?: string,
+	transport?: SimpleStreamOptions["transport"],
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) {
@@ -8046,7 +8057,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, transport));
 	}
 
 	// gentle-pi#311 P3: gentle-ai's v9 contract renders the refuter and
@@ -8072,7 +8083,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, transport));
 	}
 
 	if (selected.input.captureOperation === "review.capture-correction-plan") {
@@ -8157,6 +8168,7 @@ async function executeReviewCaptureGroupOperation(
 	// OpenCode-routed reviewer model carries its x-opencode-session attribution
 	// header. Appended last for the same positional-call-site reason as above.
 	reviewerSessionId?: string,
+	transport?: SimpleStreamOptions["transport"],
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureGroupParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) return { ...captureGroupRejected("native target STATUS is unavailable"), outcome: "native-status-unsupported" };
@@ -8204,6 +8216,7 @@ async function executeReviewCaptureGroupOperation(
 		targetCwd: cwd,
 		submission: slot.submission!,
 		...reviewHostRelaySelection(slot.lens, reviewerRouting),
+		...(transport === undefined ? {} : { transport }),
 		...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
 		...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
 		...(signal === undefined ? {} : { signal }),
@@ -9656,6 +9669,7 @@ function createGentleAiExtensionForTesting(
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw reviewCancellation("Review capture group was cancelled");
+			const transport = reviewCompletionTransport(pi);
 			const details = await executeReviewCaptureGroupOperation(
 				parameters,
 				ctx.cwd,
@@ -9669,6 +9683,7 @@ function createGentleAiExtensionForTesting(
 				// OpenCode-routed completion carries its attribution headers
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
+				transport,
 			);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
@@ -9699,6 +9714,7 @@ function createGentleAiExtensionForTesting(
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw reviewCancellation("Review capture was cancelled");
+			const transport = reviewCompletionTransport(pi);
 			const details = await executeReviewCaptureOperation(
 				parameters,
 				ctx.cwd,
@@ -9712,6 +9728,7 @@ function createGentleAiExtensionForTesting(
 				// OpenCode-routed completion carries its attribution headers
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
+				transport,
 			);
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],
